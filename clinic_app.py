@@ -11,7 +11,7 @@ from reportlab.lib import colors
 # 1. DATABASE MANAGEMENT
 # ==========================================
 
-# DB Version 3 (Keeps your current data structure)
+# Keeping v3 to preserve your data
 DB_FILE = "clinic_v3.db"
 
 def init_db():
@@ -245,10 +245,9 @@ def main():
             
             st.divider()
             
-            # --- UPDATED: Payment Section ---
+            # --- Payment Section ---
             st.write(" **Payment Status**")
             
-            # 1. Renamed Checkbox
             is_paid = st.checkbox("Payment Received?", value=True)
             
             payment_amount_input = 0.0
@@ -257,7 +256,6 @@ def main():
             if is_paid:
                 payment_date_input = st.date_input("Payment Date", datetime.now())
                 
-                # Input for amount
                 payment_amount_input = st.number_input(
                     "Amount Paid ($)", 
                     min_value=0.0, 
@@ -266,7 +264,7 @@ def main():
                     value=total
                 )
                 
-                # 2. Real-time Balance Display
+                # Real-time Balance Display
                 balance_remaining = total - payment_amount_input
                 
                 if balance_remaining > 0.01:
@@ -327,11 +325,23 @@ def main():
         conn.close()
 
         if not history_df.empty:
-            # Calculate Balance for display
+            # Calculate Individual Balances
             history_df['balance'] = history_df['total'] - history_df['payment_amount']
             
+            # --- NEW: Calculate GRAND TOTAL Outstanding ---
+            grand_total_outstanding = history_df['balance'].sum()
+            
+            # Display Grand Total in a metric box
+            st.divider()
+            col_total, col_dummy = st.columns([1, 2])
+            with col_total:
+                if grand_total_outstanding > 0.01:
+                    st.error(f"⚠️ TOTAL BALANCE DUE: ${grand_total_outstanding:.2f}")
+                else:
+                    st.success(f"✅ All Paid (Balance: ${grand_total_outstanding:.2f})")
+            
             # Display intuitive table
-            st.subheader(f"History for {current_patient_name}")
+            st.subheader(f"Treatment Log: {current_patient_name}")
             
             # Rename columns for cleaner UI
             display_df = history_df[['treatment_date', 'treatment_type', 'total', 'payment_amount', 'balance', 'payment_date']].copy()
@@ -352,7 +362,6 @@ def main():
             col_r1, col_r2 = st.columns([3, 1])
             
             with col_r1:
-                # Create a readable list of visits for the dropdown
                 visit_options = history_df.apply(
                     lambda x: f"{x['treatment_date']} - {x['treatment_type']} (Paid: ${x['payment_amount']:.2f})", axis=1
                 )
