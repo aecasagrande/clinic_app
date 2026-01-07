@@ -24,7 +24,7 @@ def init_db():
                     unique_id TEXT UNIQUE
                 )''')
     
-    # Treatments Table (This holds the FULL history)
+    # Treatments Table
     c.execute('''CREATE TABLE IF NOT EXISTS treatments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     patient_id INTEGER,
@@ -44,7 +44,6 @@ def init_db():
                     value TEXT
                 )''')
     
-    # Default Settings
     defaults = {
         "clinic_name": "My Health Clinic",
         "clinic_address": "123 Wellness Blvd, City, ON",
@@ -284,7 +283,7 @@ def main():
                     st.error("Select a patient first.")
 
     # ---------------------------------------------------------
-    # PAGE: PATIENT RECORDS
+    # PAGE: PATIENT RECORDS (WITH EDITING)
     # ---------------------------------------------------------
     elif page == "Patient Records":
         st.header("📂 Patient Financials")
@@ -328,7 +327,65 @@ def main():
             else:
                 c3.metric("Status", "Paid in Full", delta="OK")
 
-        # 3. GENERATE STATEMENT
+        # 3. INTERACTIVE DATA EDITOR (EDIT & DELETE)
+        st.divider()
+        st.subheader("📋 Edit / Delete Records")
+        st.info("💡 You can edit cells directly below. Select a row and press 'Delete' key to remove it. Click 'Save Changes' to apply.")
+
+        # Load data for editing
+        query_all = "SELECT id, treatment_date, treatment_type, total, payment_amount, payment_date FROM treatments WHERE patient_id = ? ORDER BY treatment_date DESC"
+        editor_df = pd.read_sql(query_all, conn, params=(pat_id,))
+        
+        # We render the data editor
+        # num_rows="dynamic" allows adding/deleting rows. 
+        # We will ignore 'added' rows here to keep things simple (add via New Treatment tab)
+        edited_df = st.data_editor(
+            editor_df, 
+            num_rows="dynamic", 
+            key="data_editor",
+            disabled=["id"], # Prevent editing the ID
+            hide_index=True
+        )
+        
+        if st.button("💾 Save Changes (Edits & Deletes)"):
+            try:
+                # 1. Handle Deletions
+                # Identify IDs that were in original but NOT in edited_df
+                original_ids = set(editor_df['id'].tolist())
+                new_ids = set(edited_df['id'].tolist())
+                deleted_ids = original_ids - new_ids
+                
+                for del_id in deleted_ids:
+                    conn.execute("DELETE FROM treatments WHERE id = ?", (del_id,))
+                
+                # 2. Handle Updates
+                # We iterate through the edited dataframe and update the DB row for that ID
+                for index, row in edited_df.iterrows():
+                    # Only update rows that exist (skip new empty rows if user accidentally added one)
+                    if pd.notna(row['id']):
+                        conn.execute('''
+                            UPDATE treatments 
+                            SET treatment_date=?, treatment_type=?, total=?, payment_amount=?, payment_date=?
+                            WHERE id=?
+                        ''', (
+                            row['treatment_date'], 
+                            row['treatment_type'], 
+                            row['total'], 
+                            row['payment_amount'], 
+                            row['payment_date'],
+                            row['id']
+                        ))
+                
+                conn.commit()
+                st.success("Changes saved successfully!")
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"Error saving changes: {e}")
+        
+        conn.close()
+
+        # 4. GENERATE STATEMENT
         st.divider()
         st.subheader("🖨️ Generate Receipt / Statement")
         
@@ -344,32 +401,25 @@ def main():
         with col_d2:
             end_date = st.date_input("End Date", today, disabled=use_all_time)
 
-        if use_all_time:
-             query = 'SELECT * FROM treatments WHERE patient_id = ? ORDER BY treatment_date DESC'
-             params = (pat_id,)
-        else:
-             query = 'SELECT * FROM treatments WHERE patient_id = ? AND treatment_date BETWEEN ? AND ? ORDER BY treatment_date DESC'
-             params = (pat_id, start_date, end_date)
-             
-        range_df = pd.read_sql(query, conn, params=params)
-        range_df['total'] = range_df['total'].fillna(0.0)
-        range_df['payment_amount'] = range_df['payment_amount'].fillna(0.0)
-        conn.close()
+        if st.button("Generate Statement PDF"):
+            conn = get_db_connection()
+            if use_all_time:
+                 query = 'SELECT * FROM treatments WHERE patient_id = ? ORDER BY treatment_date DESC'
+                 params = (pat_id,)
+            else:
+                 query = 'SELECT * FROM treatments WHERE patient_id = ? AND treatment_date BETWEEN ? AND ? ORDER BY treatment_date DESC'
+                 params = (pat_id, start_date, end_date)
+                 
+            range_df = pd.read_sql(query, conn, params=params)
+            conn.close()
 
-        if not range_df.empty:
-            range_df['Status'] = range_df.apply(
-                lambda x: "Owing" if (x['total'] - x['payment_amount']) > 0.01 else ("Credit" if (x['total'] - x['payment_amount']) < -0.01 else "Paid"), 
-                axis=1
-            )
-            st.dataframe(range_df[['treatment_date', 'treatment_type', 'total', 'payment_amount', 'Status']], use_container_width=True)
-            
-            if st.button("Generate Statement PDF"):
+            if not range_df.empty:
                 records = range_df.to_dict('records')
                 date_str = "ALL TIME" if use_all_time else f"{start_date} to {end_date}"
                 pdf_data = generate_pdf(pat_name, date_str, records)
                 st.download_button(label="⬇️ Download PDF", data=pdf_data, file_name=f"Statement_{pat_name}.pdf", mime="application/pdf")
-        else:
-            st.info("No treatments found in the selected range.")
+            else:
+                st.error("No records found in that date range.")
 
     # ---------------------------------------------------------
     # PAGE: SETTINGS & DATA MANAGEMENT
@@ -402,7 +452,6 @@ def main():
             st.write("Download your data periodically to keep it safe.")
             
             conn = get_db_connection()
-            # This selects ALL history (dates, payments, types, etc.)
             df_pat_bk = pd.read_sql("SELECT * FROM patients", conn)
             df_treat_bk = pd.read_sql("SELECT * FROM treatments", conn)
             conn.close()
@@ -416,7 +465,6 @@ def main():
                     mime="text/csv"
                 )
             with b2:
-                # THIS IS THE BUTTON that downloads the FULL treatment history
                 st.download_button(
                     "Download Treatments (CSV)", 
                     data=df_treat_bk.to_csv(index=False).encode('utf-8'),
@@ -435,17 +483,14 @@ def main():
                 if up_pat and up_treat:
                     try:
                         conn = get_db_connection()
-                        
                         new_pats = pd.read_csv(up_pat)
                         new_treats = pd.read_csv(up_treat)
                         
-                        # We use if_exists='append' to insert the old records back in.
-                        # SQLite will handle the IDs to ensure patients are linked correctly.
                         new_pats.to_sql('patients', conn, if_exists='append', index=False)
                         st.success(f"✅ Restored {len(new_pats)} patients.")
                         
                         new_treats.to_sql('treatments', conn, if_exists='append', index=False)
-                        st.success(f"✅ Restored {len(new_treats)} treatment records (Full History).")
+                        st.success(f"✅ Restored {len(new_treats)} treatment records.")
                         
                         conn.close()
                         st.balloons()
