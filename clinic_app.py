@@ -1,7 +1,7 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -11,22 +11,18 @@ from reportlab.lib import colors
 # 1. DATABASE MANAGEMENT
 # ==========================================
 
-# Keeping v3 to preserve your data
 DB_FILE = "clinic_v3.db"
 
 def init_db():
-    """Initialize the SQLite database with necessary tables."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # Patients Table
     c.execute('''CREATE TABLE IF NOT EXISTS patients (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     full_name TEXT NOT NULL,
                     unique_id TEXT UNIQUE
                 )''')
     
-    # Treatments Table
     c.execute('''CREATE TABLE IF NOT EXISTS treatments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     patient_id INTEGER,
@@ -40,13 +36,11 @@ def init_db():
                     FOREIGN KEY(patient_id) REFERENCES patients(id)
                 )''')
 
-    # Settings Table
     c.execute('''CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT
                 )''')
     
-    # Initialize default settings
     defaults = {
         "clinic_name": "My Health Clinic",
         "clinic_address": "123 Wellness Blvd, City, ON",
@@ -79,88 +73,110 @@ def update_setting(key, value):
     conn.close()
 
 # ==========================================
-# 2. PDF RECEIPT GENERATION
+# 2. PDF GENERATOR (MULTI-ITEM SUPPORT)
 # ==========================================
 
-def generate_pdf(patient_name, service_date, service_desc, subtotal, tax, total, paid_amount, payment_date):
+def generate_pdf(patient_name, date_range_str, records):
+    """
+    records: A list of dictionaries/rows containing treatment details
+    """
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
     
-    # Fetch Settings
+    # Settings
     clinic_name = get_setting("clinic_name")
     address = get_setting("clinic_address")
     phone = get_setting("clinic_phone")
     hst_num = get_setting("hst_number")
     footer_text = get_setting("receipt_footer")
 
-    # Calculations
-    balance_due = total - paid_amount
-
     # --- Header ---
     p.setFont("Helvetica-Bold", 20)
     p.drawString(50, height - 50, clinic_name)
-    
     p.setFont("Helvetica", 10)
     p.drawString(50, height - 70, address)
     p.drawString(50, height - 85, f"Phone: {phone}")
     p.drawString(50, height - 100, f"HST #: {hst_num}")
-    
     p.line(50, height - 110, width - 50, height - 110)
 
-    # --- Receipt Details ---
+    # --- Info ---
     p.setFont("Helvetica-Bold", 14)
-    p.drawString(50, height - 150, "OFFICIAL RECEIPT")
-    
+    p.drawString(50, height - 150, "STATEMENT / RECEIPT")
     p.setFont("Helvetica", 12)
-    p.drawString(50, height - 180, f"Patient Name: {patient_name}")
-    p.drawString(50, height - 200, f"Date of Service: {service_date}")
+    p.drawString(50, height - 175, f"Patient: {patient_name}")
+    p.drawString(50, height - 195, f"Period: {date_range_str}")
+
+    # --- Table Headers ---
+    y = height - 240
+    p.setFont("Helvetica-Bold", 10)
+    p.drawString(50, y, "Date")
+    p.drawString(130, y, "Description")
+    p.drawString(350, y, "Cost")
+    p.drawString(420, y, "Paid")
+    p.drawString(490, y, "Balance")
+    p.line(50, y - 5, width - 50, y - 5)
     
-    # --- Payment Status Badge ---
-    is_fully_paid = balance_due <= 0.01
-    status_text = "PAID IN FULL" if is_fully_paid else "BALANCE DUE"
-    status_color = colors.green if is_fully_paid else colors.red
-    
-    p.setFillColor(status_color)
-    p.setFont("Helvetica-Bold", 14)
-    p.drawString(400, height - 160, status_text)
-    
-    p.setFillColor(colors.black)
+    y -= 25
     p.setFont("Helvetica", 10)
-    if payment_date and paid_amount > 0:
-         p.drawString(400, height - 175, f"Payment Date: {payment_date}")
 
-    # --- Financial Table ---
-    y_start = height - 250
-    p.setFont("Helvetica-Bold", 11)
-    p.drawString(50, y_start, "Description")
-    p.drawString(400, y_start, "Amount")
-    p.line(50, y_start - 5, width - 50, y_start - 5)
+    # --- Loop Items ---
+    total_cost = 0
+    total_paid = 0
 
-    # Line Items
-    p.setFont("Helvetica", 11)
-    p.drawString(50, y_start - 25, service_desc)
-    p.drawString(400, y_start - 25, f"${subtotal:.2f}")
+    for item in records:
+        # Check for page overflow
+        if y < 100:
+            p.showPage()
+            y = height - 50
+        
+        # Calculate item balance
+        item_bal = item['total'] - item['payment_amount']
+        
+        p.drawString(50, y, str(item['treatment_date']))
+        p.drawString(130, y, str(item['treatment_type']))
+        p.drawString(350, y, f"{item['total']:.2f}")
+        p.drawString(420, y, f"{item['payment_amount']:.2f}")
+        
+        # Color code item balance
+        if item_bal > 0.01:
+            p.setFillColor(colors.red)
+        elif item_bal < -0.01:
+            p.setFillColor(colors.green) # Or yellow logic, but standard ledger usually green/black
+        p.drawString(490, y, f"{item_bal:.2f}")
+        p.setFillColor(colors.black)
+        
+        total_cost += item['total']
+        total_paid += item['payment_amount']
+        y -= 20
 
-    p.drawString(300, y_start - 45, "HST (13%):")
-    p.drawString(400, y_start - 45, f"${tax:.2f}")
-
-    p.line(300, y_start - 55, width - 50, y_start - 55)
+    # --- Summary Box ---
+    y -= 20
+    p.line(50, y, width - 50, y)
+    y -= 30
     
-    # Totals
+    grand_balance = total_cost - total_paid
+    
     p.setFont("Helvetica-Bold", 12)
-    p.drawString(300, y_start - 75, "TOTAL:")
-    p.drawString(400, y_start - 75, f"${total:.2f}")
+    p.drawString(300, y, "Total Billed:")
+    p.drawString(450, y, f"${total_cost:.2f}")
     
-    p.setFont("Helvetica", 11)
-    p.drawString(300, y_start - 95, "Amount Paid:")
-    p.drawString(400, y_start - 95, f"${paid_amount:.2f}")
+    y -= 20
+    p.drawString(300, y, "Total Paid:")
+    p.drawString(450, y, f"${total_paid:.2f}")
     
-    p.setFont("Helvetica-Bold", 12)
-    if not is_fully_paid:
+    y -= 25
+    p.setFont("Helvetica-Bold", 14)
+    p.drawString(300, y, "BALANCE DUE:")
+    
+    if grand_balance > 0.01:
         p.setFillColor(colors.red)
-    p.drawString(300, y_start - 115, "Balance Due:")
-    p.drawString(400, y_start - 115, f"${balance_due:.2f}")
+    elif grand_balance < -0.01:
+        p.setFillColor(colors.orange) # Credit
+    else:
+        p.setFillColor(colors.green)
+        
+    p.drawString(450, y, f"${grand_balance:.2f}")
 
     # --- Footer ---
     p.setFillColor(colors.black)
@@ -169,31 +185,25 @@ def generate_pdf(patient_name, service_date, service_desc, subtotal, tax, total,
 
     p.showPage()
     p.save()
-    
     buffer.seek(0)
     return buffer
 
 # ==========================================
-# 3. STREAMLIT UI
+# 3. UI
 # ==========================================
 
 def main():
     st.set_page_config(page_title="Clinic Manager", page_icon="🏥", layout="wide")
     init_db()
 
-    # --- Sidebar Navigation ---
     st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to:", ["New Treatment", "Patient History & Receipts", "Settings"])
+    page = st.sidebar.radio("Go to:", ["New Treatment", "Patient Records", "Settings"])
 
-    # ==========================
-    # PAGE: NEW TREATMENT
-    # ==========================
+    # --- NEW TREATMENT PAGE ---
     if page == "New Treatment":
         st.header("📝 New Treatment Entry")
-
         col1, col2 = st.columns(2)
 
-        # --- 1. Select / Create Patient ---
         with col1:
             st.subheader("1. Patient")
             conn = get_db_connection()
@@ -201,7 +211,6 @@ def main():
             conn.close()
 
             tab_exist, tab_new = st.tabs(["Existing Patient", "Register New"])
-            
             selected_patient_id = None
             
             with tab_exist:
@@ -210,72 +219,52 @@ def main():
                     selected_patient_str = st.selectbox("Search Patient", patients_df['display'])
                     selected_patient_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
                 else:
-                    st.info("No patients found. Please register a new one.")
+                    st.info("No patients found.")
 
             with tab_new:
                 new_name = st.text_input("Full Name")
                 new_id = st.text_input("Patient ID (Unique)")
                 if st.button("Register Patient"):
-                    if new_name and new_id:
-                        try:
-                            conn = get_db_connection()
-                            conn.execute("INSERT INTO patients (full_name, unique_id) VALUES (?, ?)", (new_name, new_id))
-                            conn.commit()
-                            conn.close()
-                            st.success(f"Registered {new_name}!")
-                            st.rerun()
-                        except sqlite3.IntegrityError:
-                            st.error("Patient ID already exists.")
-                    else:
-                        st.error("Enter both Name and ID.")
+                    try:
+                        conn = get_db_connection()
+                        conn.execute("INSERT INTO patients (full_name, unique_id) VALUES (?, ?)", (new_name, new_id))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Registered {new_name}!")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Patient ID already exists.")
 
-        # --- 2. Treatment & Payment Details ---
         with col2:
-            st.subheader("2. Treatment & Payment")
-            
+            st.subheader("2. Treatment Details")
             treatment_type = st.selectbox("Service Type", ["Magnetic Field Therapy", "Helium Neon Laser"])
             treatment_date = st.date_input("Date of Service", datetime.now())
 
-            # Cost Calculation
             cost = 25.00
             hst = cost * 0.13
             total = cost + hst
 
             st.markdown(f"**Total Cost:** :green[**${total:.2f}**]")
-            
             st.divider()
             
-            # --- Payment Section ---
             st.write(" **Payment Status**")
-            
             is_paid = st.checkbox("Payment Received?", value=True)
             
-            payment_amount_input = 0.0
-            payment_date_input = None
+            payment_amount = 0.0
+            payment_date = None
 
             if is_paid:
-                payment_date_input = st.date_input("Payment Date", datetime.now())
+                payment_date = st.date_input("Payment Date", datetime.now())
+                payment_amount = st.number_input("Amount Paid ($)", min_value=0.0, value=total, step=0.01)
                 
-                payment_amount_input = st.number_input(
-                    "Amount Paid ($)", 
-                    min_value=0.0, 
-                    max_value=1000.0, 
-                    step=0.01, 
-                    value=total
-                )
-                
-                # Real-time Balance Display
-                balance_remaining = total - payment_amount_input
-                
-                if balance_remaining > 0.01:
-                    st.markdown(f"#### :red[Balance Due: ${balance_remaining:.2f}]")
-                elif balance_remaining < -0.01:
-                    st.markdown(f"#### :orange[Overpayment: ${abs(balance_remaining):.2f}]")
+                bal = total - payment_amount
+                if bal > 0.01:
+                    st.markdown(f"#### :red[Balance Due: ${bal:.2f}]")
+                elif bal < -0.01:
+                    st.markdown(f"#### :orange[Overpayment: ${abs(bal):.2f}]")
                 else:
                     st.markdown(f"#### :green[Paid in Full]")
-                
             else:
-                st.info("Payment will be recorded as $0.00.")
                 st.markdown(f"#### :red[Balance Due: ${total:.2f}]")
 
             if st.button("💾 Save Record", type="primary"):
@@ -284,138 +273,121 @@ def main():
                     conn.execute('''INSERT INTO treatments 
                                     (patient_id, treatment_type, treatment_date, subtotal, tax, total, payment_amount, payment_date) 
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
-                                    (selected_patient_id, treatment_type, treatment_date, cost, hst, total, payment_amount_input, payment_date_input))
+                                    (selected_patient_id, treatment_type, treatment_date, cost, hst, total, payment_amount, payment_date))
                     conn.commit()
                     conn.close()
-                    st.success("Treatment and payment recorded!")
+                    st.success("Saved!")
                 else:
-                    st.error("Please select a patient first.")
+                    st.error("Select a patient first.")
 
-    # ==========================
-    # PAGE: PATIENT HISTORY
-    # ==========================
-    elif page == "Patient History & Receipts":
-        st.header("📂 Patient History")
+    # --- PATIENT RECORDS PAGE ---
+    elif page == "Patient Records":
+        st.header("📂 Patient Records & Statements")
 
         conn = get_db_connection()
         patients_df = pd.read_sql("SELECT * FROM patients", conn)
         
         if patients_df.empty:
-            st.warning("No patients in database.")
+            st.warning("No patients found.")
             conn.close()
             return
 
-        # 1. Select Patient (Top Level)
+        # 1. SELECT PATIENT
         patients_df['display'] = patients_df['full_name'] + " (ID: " + patients_df['unique_id'] + ")"
-        selected_patient_str = st.selectbox("Select Patient to View History:", patients_df['display'])
+        selected_patient_str = st.selectbox("Select Patient:", patients_df['display'])
         
-        # Get Patient ID
-        current_patient_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
-        current_patient_name = patients_df.loc[patients_df['display'] == selected_patient_str, 'full_name'].values[0]
+        pat_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
+        pat_name = patients_df.loc[patients_df['display'] == selected_patient_str, 'full_name'].values[0]
 
-        # 2. Fetch History for THIS patient
-        history_query = '''
-            SELECT 
-                id, treatment_date, treatment_type, total, payment_amount, payment_date, subtotal, tax
-            FROM treatments 
-            WHERE patient_id = ?
+        # 2. CALCULATE STANDING (CREDIT/OWING)
+        # We query ALL time for this patient to get their standing
+        all_time_df = pd.read_sql("SELECT * FROM treatments WHERE patient_id = ?", conn, params=(pat_id,))
+        
+        if not all_time_df.empty:
+            total_billed = all_time_df['total'].sum()
+            total_paid = all_time_df['payment_amount'].sum()
+            standing = total_billed - total_paid
+
+            st.divider()
+            st.subheader(f"Status: {pat_name}")
+
+            # LOGIC:
+            # If standing > 0: They owe money (RED, Negative)
+            # If standing == 0: Paid (GREEN)
+            # If standing < 0: They have credit (YELLOW, Positive)
+            
+            col_status, col_detail = st.columns([2, 1])
+            
+            with col_status:
+                if standing > 0.01:
+                    # They owe money
+                    st.error(f"⚠️ OWING: -${standing:.2f}")
+                elif standing < -0.01:
+                    # Overpaid
+                    credit = abs(standing)
+                    st.warning(f"📒 CREDIT: +${credit:.2f}")
+                else:
+                    st.success("✅ PAID IN FULL: $0.00")
+
+        # 3. GENERATE STATEMENT (DATE RANGE)
+        st.divider()
+        st.subheader("🖨️ Generate Receipt / Statement")
+        
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            # Date Range Selector
+            today = datetime.now().date()
+            start_date = st.date_input("Start Date", today - timedelta(days=30))
+        with col_d2:
+            end_date = st.date_input("End Date", today)
+
+        # Filter Data by Range
+        query = '''
+            SELECT * FROM treatments 
+            WHERE patient_id = ? 
+            AND treatment_date BETWEEN ? AND ?
             ORDER BY treatment_date DESC
         '''
-        history_df = pd.read_sql(history_query, conn, params=(current_patient_id,))
+        range_df = pd.read_sql(query, conn, params=(pat_id, start_date, end_date))
         conn.close()
 
-        if not history_df.empty:
-            # Calculate Individual Balances
-            history_df['balance'] = history_df['total'] - history_df['payment_amount']
+        if not range_df.empty:
+            st.write(f"Found **{len(range_df)}** treatments in this period.")
+            st.dataframe(range_df[['treatment_date', 'treatment_type', 'total', 'payment_amount']], use_container_width=True)
             
-            # --- NEW: Calculate GRAND TOTAL Outstanding ---
-            grand_total_outstanding = history_df['balance'].sum()
-            
-            # Display Grand Total in a metric box
-            st.divider()
-            col_total, col_dummy = st.columns([1, 2])
-            with col_total:
-                if grand_total_outstanding > 0.01:
-                    st.error(f"⚠️ TOTAL BALANCE DUE: ${grand_total_outstanding:.2f}")
-                else:
-                    st.success(f"✅ All Paid (Balance: ${grand_total_outstanding:.2f})")
-            
-            # Display intuitive table
-            st.subheader(f"Treatment Log: {current_patient_name}")
-            
-            # Rename columns for cleaner UI
-            display_df = history_df[['treatment_date', 'treatment_type', 'total', 'payment_amount', 'balance', 'payment_date']].copy()
-            display_df.columns = ['Date', 'Service', 'Total ($)', 'Paid ($)', 'Balance ($)', 'Paid On']
-            
-            # Highlight unpaid rows
-            def highlight_unpaid(row):
-                if row['Balance ($)'] > 0.01:
-                    return ['background-color: #ffcccc'] * len(row)
-                return [''] * len(row)
-
-            st.dataframe(display_df.style.apply(highlight_unpaid, axis=1), use_container_width=True)
-
-            st.divider()
-            
-            # 3. Receipt Generation Section
-            st.subheader("🖨️ Generate Receipt")
-            col_r1, col_r2 = st.columns([3, 1])
-            
-            with col_r1:
-                visit_options = history_df.apply(
-                    lambda x: f"{x['treatment_date']} - {x['treatment_type']} (Paid: ${x['payment_amount']:.2f})", axis=1
+            if st.button("Generate Statement PDF"):
+                # Convert DF to list of dicts for the PDF generator
+                records = range_df.to_dict('records')
+                date_str = f"{start_date} to {end_date}"
+                
+                pdf_data = generate_pdf(pat_name, date_str, records)
+                
+                st.download_button(
+                    label="⬇️ Download PDF",
+                    data=pdf_data,
+                    file_name=f"Statement_{pat_name}_{start_date}.pdf",
+                    mime="application/pdf"
                 )
-                selected_visit_str = st.selectbox("Select Visit to Print:", visit_options)
-            
-            with col_r2:
-                st.write("") # Spacer
-                st.write("") # Spacer
-                if st.button("Generate PDF"):
-                    selected_index = visit_options[visit_options == selected_visit_str].index[0]
-                    record = history_df.loc[selected_index]
-
-                    pdf_data = generate_pdf(
-                        patient_name=current_patient_name,
-                        service_date=record['treatment_date'],
-                        service_desc=record['treatment_type'],
-                        subtotal=record['subtotal'],
-                        tax=record['tax'],
-                        total=record['total'],
-                        paid_amount=record['payment_amount'],
-                        payment_date=record['payment_date']
-                    )
-                    
-                    st.download_button(
-                        label="⬇️ Download Receipt",
-                        data=pdf_data,
-                        file_name=f"Receipt_{current_patient_name}_{record['treatment_date']}.pdf",
-                        mime="application/pdf"
-                    )
-
         else:
-            st.info("No treatment history found for this patient.")
+            st.info("No treatments found in the selected date range.")
 
-    # ==========================
-    # PAGE: SETTINGS
-    # ==========================
+    # --- SETTINGS PAGE ---
     elif page == "Settings":
-        st.header("⚙️ Receipt Settings")
-        
-        with st.form("settings_form"):
-            st.write("Customize your receipt header and footer.")
+        st.header("⚙️ Settings")
+        with st.form("settings"):
             c_name = st.text_input("Clinic Name", value=get_setting("clinic_name"))
             c_addr = st.text_input("Clinic Address", value=get_setting("clinic_address"))
-            c_phone = st.text_input("Phone Number", value=get_setting("clinic_phone"))
-            c_hst = st.text_input("HST Number", value=get_setting("hst_number"))
-            c_footer = st.text_input("Footer Message", value=get_setting("receipt_footer"))
-
-            if st.form_submit_button("Save Settings"):
+            c_phone = st.text_input("Phone", value=get_setting("clinic_phone"))
+            c_hst = st.text_input("HST #", value=get_setting("hst_number"))
+            c_foot = st.text_input("Footer", value=get_setting("receipt_footer"))
+            
+            if st.form_submit_button("Save"):
                 update_setting("clinic_name", c_name)
                 update_setting("clinic_address", c_addr)
                 update_setting("clinic_phone", c_phone)
                 update_setting("hst_number", c_hst)
-                update_setting("receipt_footer", c_footer)
-                st.success("Settings updated!")
+                update_setting("receipt_footer", c_foot)
+                st.success("Updated!")
 
 if __name__ == "__main__":
     main()
