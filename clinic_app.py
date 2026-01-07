@@ -6,6 +6,7 @@ from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
+import time
 
 # ==========================================
 # 1. DATABASE MANAGEMENT
@@ -66,18 +67,22 @@ def update_setting(key, value):
     conn.commit()
     conn.close()
 
-# --- CALLBACKS (This fixes the delete issue) ---
+# --- CALLBACKS (FIXED: Clears Selection State) ---
 def delete_patient_callback(patient_id):
-    """Deletes a patient and all their history safely."""
+    """Deletes a patient and forces the dropdown to reset."""
     try:
         conn = sqlite3.connect(DB_FILE)
-        # 1. Delete Treatments first
         conn.execute("DELETE FROM treatments WHERE patient_id = ?", (patient_id,))
-        # 2. Delete Patient
         conn.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
         conn.commit()
         conn.close()
-        st.toast("✅ Patient deleted successfully!", icon="🗑️")
+        
+        # --- THE FIX: Clear the "remembered" selection from Session State ---
+        if "patient_select_box" in st.session_state:
+            del st.session_state["patient_select_box"]
+            
+        st.toast("✅ Patient deleted!", icon="🗑️")
+        
     except Exception as e:
         st.error(f"Error deleting patient: {e}")
 
@@ -304,7 +309,9 @@ def main():
 
         # 1. SELECT PATIENT
         patients_df['display'] = patients_df['full_name'] + " (ID: " + patients_df['unique_id'] + ")"
-        selected_patient_str = st.selectbox("Select Patient:", patients_df['display'])
+        
+        # KEY ADDED HERE: "pat_select_box"
+        selected_patient_str = st.selectbox("Select Patient:", patients_df['display'], key="pat_select_box")
         
         pat_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
         pat_name = patients_df.loc[patients_df['display'] == selected_patient_str, 'full_name'].values[0]
@@ -417,7 +424,6 @@ def main():
         st.divider()
         with st.expander("🚨 Danger Zone: Delete Patient Profile"):
             st.error(f"Warning: You are about to delete **{pat_name}** and ALL their history. This cannot be undone.")
-            # We use the callback here to ensure deletion happens BEFORE screen refresh
             st.button(
                 "❌ Permanently Delete Patient", 
                 type="primary",
