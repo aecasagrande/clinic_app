@@ -24,7 +24,7 @@ def init_db():
                     unique_id TEXT UNIQUE
                 )''')
     
-    # Treatments Table
+    # Treatments Table (This holds the FULL history)
     c.execute('''CREATE TABLE IF NOT EXISTS treatments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     patient_id INTEGER,
@@ -85,14 +85,13 @@ def generate_pdf(patient_name, date_range_str, records):
     p = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
     
-    # Settings
     clinic_name = get_setting("clinic_name")
     address = get_setting("clinic_address")
     phone = get_setting("clinic_phone")
     hst_num = get_setting("hst_number")
     footer_text = get_setting("receipt_footer")
 
-    # --- Header ---
+    # Header
     p.setFont("Helvetica-Bold", 20)
     p.drawString(50, height - 50, clinic_name)
     p.setFont("Helvetica", 10)
@@ -101,14 +100,14 @@ def generate_pdf(patient_name, date_range_str, records):
     p.drawString(50, height - 100, f"HST #: {hst_num}")
     p.line(50, height - 110, width - 50, height - 110)
 
-    # --- Info ---
+    # Info
     p.setFont("Helvetica-Bold", 14)
     p.drawString(50, height - 150, "STATEMENT OF ACCOUNT")
     p.setFont("Helvetica", 12)
     p.drawString(50, height - 175, f"Patient: {patient_name}")
     p.drawString(50, height - 195, f"Period: {date_range_str}")
 
-    # --- Table Headers ---
+    # Table
     y = height - 240
     p.setFont("Helvetica-Bold", 10)
     p.drawString(50, y, "Date")
@@ -121,7 +120,6 @@ def generate_pdf(patient_name, date_range_str, records):
     y -= 25
     p.setFont("Helvetica", 10)
 
-    # --- Loop Items ---
     total_billed = 0.0
     total_paid = 0.0
 
@@ -151,7 +149,7 @@ def generate_pdf(patient_name, date_range_str, records):
         total_paid += paid
         y -= 20
 
-    # --- Summary Box ---
+    # Summary
     y -= 20
     p.line(50, y, width - 50, y)
     y -= 30
@@ -379,7 +377,6 @@ def main():
     elif page == "Settings":
         st.header("⚙️ Settings")
         
-        # 1. Receipt Config
         with st.expander("🧾 Receipt Customization", expanded=True):
             with st.form("settings"):
                 c_name = st.text_input("Clinic Name", value=get_setting("clinic_name"))
@@ -395,7 +392,6 @@ def main():
                     update_setting("receipt_footer", c_foot)
                     st.success("Updated!")
 
-        # 2. Data Backup & Restore
         st.divider()
         st.subheader("💾 Data Management (Backup & Restore)")
         
@@ -404,7 +400,9 @@ def main():
         # --- BACKUP ---
         with tab_backup:
             st.write("Download your data periodically to keep it safe.")
+            
             conn = get_db_connection()
+            # This selects ALL history (dates, payments, types, etc.)
             df_pat_bk = pd.read_sql("SELECT * FROM patients", conn)
             df_treat_bk = pd.read_sql("SELECT * FROM treatments", conn)
             conn.close()
@@ -418,6 +416,7 @@ def main():
                     mime="text/csv"
                 )
             with b2:
+                # THIS IS THE BUTTON that downloads the FULL treatment history
                 st.download_button(
                     "Download Treatments (CSV)", 
                     data=df_treat_bk.to_csv(index=False).encode('utf-8'),
@@ -427,7 +426,7 @@ def main():
         
         # --- RESTORE ---
         with tab_restore:
-            st.warning("⚠️ Uploading files will MERGE data into the database. If starting fresh, this restores your history.")
+            st.warning("⚠️ Uploading files will MERGE data into the database. Use this if your data was wiped.")
             
             up_pat = st.file_uploader("Upload Patients CSV", type=['csv'])
             up_treat = st.file_uploader("Upload Treatments CSV", type=['csv'])
@@ -437,30 +436,26 @@ def main():
                     try:
                         conn = get_db_connection()
                         
-                        # Load CSVs
                         new_pats = pd.read_csv(up_pat)
                         new_treats = pd.read_csv(up_treat)
                         
-                        # 1. Restore Patients (Keep IDs to maintain links)
-                        # We use 'append' but we must ensure we don't duplicate if ID exists
-                        # Simple strategy: append. If ID conflict, SQLite throws error.
-                        # Ideally, for restoration, we assume we want to put these rows in.
+                        # We use if_exists='append' to insert the old records back in.
+                        # SQLite will handle the IDs to ensure patients are linked correctly.
                         new_pats.to_sql('patients', conn, if_exists='append', index=False)
                         st.success(f"✅ Restored {len(new_pats)} patients.")
                         
-                        # 2. Restore Treatments
                         new_treats.to_sql('treatments', conn, if_exists='append', index=False)
-                        st.success(f"✅ Restored {len(new_treats)} treatment records.")
+                        st.success(f"✅ Restored {len(new_treats)} treatment records (Full History).")
                         
                         conn.close()
                         st.balloons()
                         
                     except sqlite3.IntegrityError:
-                        st.error("Error: Duplicate Data Detected. Some records already exist in the database.")
+                        st.error("Error: Some of this data already exists in the system.")
                     except Exception as e:
                         st.error(f"An error occurred: {e}")
                 else:
-                    st.error("Please upload BOTH files (Patients and Treatments) to restore.")
+                    st.error("Please upload BOTH files to restore.")
 
 if __name__ == "__main__":
     main()
