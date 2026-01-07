@@ -11,6 +11,7 @@ from reportlab.lib import colors
 # 1. DATABASE MANAGEMENT
 # ==========================================
 
+# V3 ensures we use the database with the payment columns
 DB_FILE = "clinic_v3.db"
 
 def init_db():
@@ -73,13 +74,10 @@ def update_setting(key, value):
     conn.close()
 
 # ==========================================
-# 2. PDF GENERATOR (MULTI-ITEM SUPPORT)
+# 2. PDF GENERATOR (SMART ACCOUNTING)
 # ==========================================
 
 def generate_pdf(patient_name, date_range_str, records):
-    """
-    records: A list of dictionaries/rows containing treatment details
-    """
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
@@ -102,7 +100,7 @@ def generate_pdf(patient_name, date_range_str, records):
 
     # --- Info ---
     p.setFont("Helvetica-Bold", 14)
-    p.drawString(50, height - 150, "STATEMENT / RECEIPT")
+    p.drawString(50, height - 150, "STATEMENT OF ACCOUNT")
     p.setFont("Helvetica", 12)
     p.drawString(50, height - 175, f"Patient: {patient_name}")
     p.drawString(50, height - 195, f"Period: {date_range_str}")
@@ -111,43 +109,46 @@ def generate_pdf(patient_name, date_range_str, records):
     y = height - 240
     p.setFont("Helvetica-Bold", 10)
     p.drawString(50, y, "Date")
-    p.drawString(130, y, "Description")
-    p.drawString(350, y, "Cost")
-    p.drawString(420, y, "Paid")
-    p.drawString(490, y, "Balance")
+    p.drawString(130, y, "Service")
+    p.drawString(330, y, "Billed")
+    p.drawString(400, y, "Paid")
+    p.drawString(480, y, "Diff")
     p.line(50, y - 5, width - 50, y - 5)
     
     y -= 25
     p.setFont("Helvetica", 10)
 
     # --- Loop Items ---
-    total_cost = 0
-    total_paid = 0
+    total_billed = 0.0
+    total_paid = 0.0
 
     for item in records:
-        # Check for page overflow
         if y < 100:
             p.showPage()
             y = height - 50
         
-        # Calculate item balance
-        item_bal = item['total'] - item['payment_amount']
+        # Ensure floats
+        billed = float(item['total'])
+        paid = float(item['payment_amount'])
         
         p.drawString(50, y, str(item['treatment_date']))
         p.drawString(130, y, str(item['treatment_type']))
-        p.drawString(350, y, f"{item['total']:.2f}")
-        p.drawString(420, y, f"{item['payment_amount']:.2f}")
+        p.drawString(330, y, f"${billed:.2f}")
+        p.drawString(400, y, f"${paid:.2f}")
         
-        # Color code item balance
-        if item_bal > 0.01:
+        # Line item difference
+        diff = billed - paid
+        if diff > 0.01: # Owe
             p.setFillColor(colors.red)
-        elif item_bal < -0.01:
-            p.setFillColor(colors.green) # Or yellow logic, but standard ledger usually green/black
-        p.drawString(490, y, f"{item_bal:.2f}")
+        elif diff < -0.01: # Credit
+            p.setFillColor(colors.green)
+        
+        # Display logic for difference
+        p.drawString(480, y, f"${diff:.2f}")
         p.setFillColor(colors.black)
         
-        total_cost += item['total']
-        total_paid += item['payment_amount']
+        total_billed += billed
+        total_paid += paid
         y -= 20
 
     # --- Summary Box ---
@@ -155,28 +156,36 @@ def generate_pdf(patient_name, date_range_str, records):
     p.line(50, y, width - 50, y)
     y -= 30
     
-    grand_balance = total_cost - total_paid
+    # Grand Math
+    net_position = total_billed - total_paid
     
     p.setFont("Helvetica-Bold", 12)
-    p.drawString(300, y, "Total Billed:")
-    p.drawString(450, y, f"${total_cost:.2f}")
+    p.drawString(250, y, "Total Billed:")
+    p.drawString(400, y, f"${total_billed:.2f}")
     
     y -= 20
-    p.drawString(300, y, "Total Paid:")
-    p.drawString(450, y, f"${total_paid:.2f}")
+    p.drawString(250, y, "Total Paid:")
+    p.drawString(400, y, f"${total_paid:.2f}")
     
     y -= 25
     p.setFont("Helvetica-Bold", 14)
-    p.drawString(300, y, "BALANCE DUE:")
     
-    if grand_balance > 0.01:
+    # Logic: 
+    # Positive Net Position = They Owe Money (Balance Due)
+    # Negative Net Position = We Owe Them (Credit)
+    
+    if net_position > 0.01:
+        p.drawString(250, y, "BALANCE DUE:")
         p.setFillColor(colors.red)
-    elif grand_balance < -0.01:
-        p.setFillColor(colors.orange) # Credit
+        p.drawString(400, y, f"${net_position:.2f}")
+    elif net_position < -0.01:
+        p.drawString(250, y, "CREDIT REMAINING:")
+        p.setFillColor(colors.orange) # Use Orange/Green for credit
+        p.drawString(400, y, f"${abs(net_position):.2f}")
     else:
+        p.drawString(250, y, "BALANCE:")
         p.setFillColor(colors.green)
-        
-    p.drawString(450, y, f"${grand_balance:.2f}")
+        p.drawString(400, y, "$0.00")
 
     # --- Footer ---
     p.setFillColor(colors.black)
@@ -257,11 +266,12 @@ def main():
                 payment_date = st.date_input("Payment Date", datetime.now())
                 payment_amount = st.number_input("Amount Paid ($)", min_value=0.0, value=total, step=0.01)
                 
+                # Immediate Math Check
                 bal = total - payment_amount
                 if bal > 0.01:
-                    st.markdown(f"#### :red[Balance Due: ${bal:.2f}]")
+                    st.markdown(f"#### :red[Balance Remaining on this visit: ${bal:.2f}]")
                 elif bal < -0.01:
-                    st.markdown(f"#### :orange[Overpayment: ${abs(bal):.2f}]")
+                    st.markdown(f"#### :orange[Overpayment (Credit): ${abs(bal):.2f}]")
                 else:
                     st.markdown(f"#### :green[Paid in Full]")
             else:
@@ -276,13 +286,13 @@ def main():
                                     (selected_patient_id, treatment_type, treatment_date, cost, hst, total, payment_amount, payment_date))
                     conn.commit()
                     conn.close()
-                    st.success("Saved!")
+                    st.success(f"Saved! Payment recorded: ${payment_amount:.2f}")
                 else:
                     st.error("Select a patient first.")
 
     # --- PATIENT RECORDS PAGE ---
     elif page == "Patient Records":
-        st.header("📂 Patient Records & Statements")
+        st.header("📂 Patient Financials")
 
         conn = get_db_connection()
         patients_df = pd.read_sql("SELECT * FROM patients", conn)
@@ -299,77 +309,90 @@ def main():
         pat_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
         pat_name = patients_df.loc[patients_df['display'] == selected_patient_str, 'full_name'].values[0]
 
-        # 2. CALCULATE STANDING (CREDIT/OWING)
-        # We query ALL time for this patient to get their standing
+        # 2. CALCULATE STANDING (ALL TIME)
         all_time_df = pd.read_sql("SELECT * FROM treatments WHERE patient_id = ?", conn, params=(pat_id,))
+        
+        # Fill NA to prevent math errors
+        all_time_df['total'] = all_time_df['total'].fillna(0.0)
+        all_time_df['payment_amount'] = all_time_df['payment_amount'].fillna(0.0)
         
         if not all_time_df.empty:
             total_billed = all_time_df['total'].sum()
             total_paid = all_time_df['payment_amount'].sum()
-            standing = total_billed - total_paid
+            net_position = total_billed - total_paid
 
             st.divider()
-            st.subheader(f"Status: {pat_name}")
-
-            # LOGIC:
-            # If standing > 0: They owe money (RED, Negative)
-            # If standing == 0: Paid (GREEN)
-            # If standing < 0: They have credit (YELLOW, Positive)
+            st.subheader(f"Financial Status: {pat_name}")
             
-            col_status, col_detail = st.columns([2, 1])
+            # Show the Equation
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Billed", f"${total_billed:.2f}")
+            c2.metric("Total Paid", f"${total_paid:.2f}")
             
-            with col_status:
-                if standing > 0.01:
-                    # They owe money
-                    st.error(f"⚠️ OWING: -${standing:.2f}")
-                elif standing < -0.01:
-                    # Overpaid
-                    credit = abs(standing)
-                    st.warning(f"📒 CREDIT: +${credit:.2f}")
-                else:
-                    st.success("✅ PAID IN FULL: $0.00")
+            # Logic: Positive = Owning, Negative = Credit
+            if net_position > 0.01:
+                c3.metric("Current Balance (OWING)", f"${net_position:.2f}", delta="-OWING", delta_color="inverse")
+            elif net_position < -0.01:
+                c3.metric("Current Credit", f"${abs(net_position):.2f}", delta="CREDIT", delta_color="normal")
+            else:
+                c3.metric("Status", "Paid in Full", delta="OK")
 
         # 3. GENERATE STATEMENT (DATE RANGE)
         st.divider()
         st.subheader("🖨️ Generate Receipt / Statement")
         
-        col_d1, col_d2 = st.columns(2)
+        col_check, col_d1, col_d2 = st.columns([1, 2, 2])
+        
+        with col_check:
+            st.write("") # Spacer
+            use_all_time = st.checkbox("Select All Time?", value=False)
+            
         with col_d1:
-            # Date Range Selector
             today = datetime.now().date()
-            start_date = st.date_input("Start Date", today - timedelta(days=30))
+            start_date = st.date_input("Start Date", today - timedelta(days=365), disabled=use_all_time)
         with col_d2:
-            end_date = st.date_input("End Date", today)
+            end_date = st.date_input("End Date", today, disabled=use_all_time)
 
-        # Filter Data by Range
-        query = '''
-            SELECT * FROM treatments 
-            WHERE patient_id = ? 
-            AND treatment_date BETWEEN ? AND ?
-            ORDER BY treatment_date DESC
-        '''
-        range_df = pd.read_sql(query, conn, params=(pat_id, start_date, end_date))
+        # Filter Data
+        if use_all_time:
+             query = 'SELECT * FROM treatments WHERE patient_id = ? ORDER BY treatment_date DESC'
+             params = (pat_id,)
+        else:
+             query = 'SELECT * FROM treatments WHERE patient_id = ? AND treatment_date BETWEEN ? AND ? ORDER BY treatment_date DESC'
+             params = (pat_id, start_date, end_date)
+             
+        range_df = pd.read_sql(query, conn, params=params)
+        range_df['total'] = range_df['total'].fillna(0.0)
+        range_df['payment_amount'] = range_df['payment_amount'].fillna(0.0)
+        
         conn.close()
 
         if not range_df.empty:
-            st.write(f"Found **{len(range_df)}** treatments in this period.")
-            st.dataframe(range_df[['treatment_date', 'treatment_type', 'total', 'payment_amount']], use_container_width=True)
+            # Show Table
+            range_df['Status'] = range_df.apply(
+                lambda x: "Owing" if (x['total'] - x['payment_amount']) > 0.01 else ("Credit" if (x['total'] - x['payment_amount']) < -0.01 else "Paid"), 
+                axis=1
+            )
+            
+            st.dataframe(
+                range_df[['treatment_date', 'treatment_type', 'total', 'payment_amount', 'Status']], 
+                use_container_width=True
+            )
             
             if st.button("Generate Statement PDF"):
-                # Convert DF to list of dicts for the PDF generator
                 records = range_df.to_dict('records')
-                date_str = f"{start_date} to {end_date}"
+                date_str = "ALL TIME" if use_all_time else f"{start_date} to {end_date}"
                 
                 pdf_data = generate_pdf(pat_name, date_str, records)
                 
                 st.download_button(
                     label="⬇️ Download PDF",
                     data=pdf_data,
-                    file_name=f"Statement_{pat_name}_{start_date}.pdf",
+                    file_name=f"Statement_{pat_name}.pdf",
                     mime="application/pdf"
                 )
         else:
-            st.info("No treatments found in the selected date range.")
+            st.info("No treatments found in the selected range.")
 
     # --- SETTINGS PAGE ---
     elif page == "Settings":
