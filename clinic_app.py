@@ -283,7 +283,7 @@ def main():
                     st.error("Select a patient first.")
 
     # ---------------------------------------------------------
-    # PAGE: PATIENT RECORDS (WITH EDITING)
+    # PAGE: PATIENT RECORDS (WITH EDITING & DELETING)
     # ---------------------------------------------------------
     elif page == "Patient Records":
         st.header("📂 Patient Financials")
@@ -327,41 +327,34 @@ def main():
             else:
                 c3.metric("Status", "Paid in Full", delta="OK")
 
-        # 3. INTERACTIVE DATA EDITOR (EDIT & DELETE)
+        # 3. INTERACTIVE DATA EDITOR (EDIT & DELETE ROWS)
         st.divider()
         st.subheader("📋 Edit / Delete Records")
-        st.info("💡 You can edit cells directly below. Select a row and press 'Delete' key to remove it. Click 'Save Changes' to apply.")
+        st.info("💡 Edit cells below. To delete a row: Select it and press 'Delete'. Click 'Save Changes' to commit.")
 
-        # Load data for editing
         query_all = "SELECT id, treatment_date, treatment_type, total, payment_amount, payment_date FROM treatments WHERE patient_id = ? ORDER BY treatment_date DESC"
         editor_df = pd.read_sql(query_all, conn, params=(pat_id,))
         
-        # We render the data editor
-        # num_rows="dynamic" allows adding/deleting rows. 
-        # We will ignore 'added' rows here to keep things simple (add via New Treatment tab)
         edited_df = st.data_editor(
             editor_df, 
             num_rows="dynamic", 
             key="data_editor",
-            disabled=["id"], # Prevent editing the ID
+            disabled=["id"],
             hide_index=True
         )
         
         if st.button("💾 Save Changes (Edits & Deletes)"):
             try:
-                # 1. Handle Deletions
-                # Identify IDs that were in original but NOT in edited_df
                 original_ids = set(editor_df['id'].tolist())
                 new_ids = set(edited_df['id'].tolist())
                 deleted_ids = original_ids - new_ids
                 
+                # Delete rows
                 for del_id in deleted_ids:
                     conn.execute("DELETE FROM treatments WHERE id = ?", (del_id,))
                 
-                # 2. Handle Updates
-                # We iterate through the edited dataframe and update the DB row for that ID
+                # Update rows
                 for index, row in edited_df.iterrows():
-                    # Only update rows that exist (skip new empty rows if user accidentally added one)
                     if pd.notna(row['id']):
                         conn.execute('''
                             UPDATE treatments 
@@ -390,11 +383,9 @@ def main():
         st.subheader("🖨️ Generate Receipt / Statement")
         
         col_check, col_d1, col_d2 = st.columns([1, 2, 2])
-        
         with col_check:
             st.write("") 
             use_all_time = st.checkbox("Select All Time?", value=False)
-            
         with col_d1:
             today = datetime.now().date()
             start_date = st.date_input("Start Date", today - timedelta(days=365), disabled=use_all_time)
@@ -420,6 +411,21 @@ def main():
                 st.download_button(label="⬇️ Download PDF", data=pdf_data, file_name=f"Statement_{pat_name}.pdf", mime="application/pdf")
             else:
                 st.error("No records found in that date range.")
+                
+        # 5. DANGER ZONE - DELETE PATIENT
+        st.divider()
+        with st.expander("🚨 Danger Zone: Delete Patient Profile"):
+            st.error(f"Warning: You are about to delete **{pat_name}** and ALL their history. This cannot be undone.")
+            if st.button("❌ Permanently Delete Patient"):
+                conn = get_db_connection()
+                # 1. Delete all history first
+                conn.execute("DELETE FROM treatments WHERE patient_id = ?", (pat_id,))
+                # 2. Delete the patient profile
+                conn.execute("DELETE FROM patients WHERE id = ?", (pat_id,))
+                conn.commit()
+                conn.close()
+                st.success(f"Patient {pat_name} has been deleted.")
+                st.rerun()
 
     # ---------------------------------------------------------
     # PAGE: SETTINGS & DATA MANAGEMENT
