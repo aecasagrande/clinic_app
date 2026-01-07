@@ -11,19 +11,20 @@ from reportlab.lib import colors
 # 1. DATABASE MANAGEMENT
 # ==========================================
 
-# V3 ensures we use the database with the payment columns
 DB_FILE = "clinic_v3.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
+    # Patients Table
     c.execute('''CREATE TABLE IF NOT EXISTS patients (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     full_name TEXT NOT NULL,
                     unique_id TEXT UNIQUE
                 )''')
     
+    # Treatments Table
     c.execute('''CREATE TABLE IF NOT EXISTS treatments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     patient_id INTEGER,
@@ -37,11 +38,13 @@ def init_db():
                     FOREIGN KEY(patient_id) REFERENCES patients(id)
                 )''')
 
+    # Settings Table
     c.execute('''CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT
                 )''')
     
+    # Default Settings
     defaults = {
         "clinic_name": "My Health Clinic",
         "clinic_address": "123 Wellness Blvd, City, ON",
@@ -74,7 +77,7 @@ def update_setting(key, value):
     conn.close()
 
 # ==========================================
-# 2. PDF GENERATOR (SMART ACCOUNTING)
+# 2. PDF GENERATOR
 # ==========================================
 
 def generate_pdf(patient_name, date_range_str, records):
@@ -127,7 +130,6 @@ def generate_pdf(patient_name, date_range_str, records):
             p.showPage()
             y = height - 50
         
-        # Ensure floats
         billed = float(item['total'])
         paid = float(item['payment_amount'])
         
@@ -136,14 +138,12 @@ def generate_pdf(patient_name, date_range_str, records):
         p.drawString(330, y, f"${billed:.2f}")
         p.drawString(400, y, f"${paid:.2f}")
         
-        # Line item difference
         diff = billed - paid
-        if diff > 0.01: # Owe
+        if diff > 0.01: 
             p.setFillColor(colors.red)
-        elif diff < -0.01: # Credit
+        elif diff < -0.01:
             p.setFillColor(colors.green)
         
-        # Display logic for difference
         p.drawString(480, y, f"${diff:.2f}")
         p.setFillColor(colors.black)
         
@@ -156,7 +156,6 @@ def generate_pdf(patient_name, date_range_str, records):
     p.line(50, y, width - 50, y)
     y -= 30
     
-    # Grand Math
     net_position = total_billed - total_paid
     
     p.setFont("Helvetica-Bold", 12)
@@ -170,24 +169,19 @@ def generate_pdf(patient_name, date_range_str, records):
     y -= 25
     p.setFont("Helvetica-Bold", 14)
     
-    # Logic: 
-    # Positive Net Position = They Owe Money (Balance Due)
-    # Negative Net Position = We Owe Them (Credit)
-    
     if net_position > 0.01:
         p.drawString(250, y, "BALANCE DUE:")
         p.setFillColor(colors.red)
         p.drawString(400, y, f"${net_position:.2f}")
     elif net_position < -0.01:
         p.drawString(250, y, "CREDIT REMAINING:")
-        p.setFillColor(colors.orange) # Use Orange/Green for credit
+        p.setFillColor(colors.orange)
         p.drawString(400, y, f"${abs(net_position):.2f}")
     else:
         p.drawString(250, y, "BALANCE:")
         p.setFillColor(colors.green)
         p.drawString(400, y, "$0.00")
 
-    # --- Footer ---
     p.setFillColor(colors.black)
     p.setFont("Helvetica-Oblique", 10)
     p.drawCentredString(width / 2, 50, footer_text)
@@ -198,7 +192,7 @@ def generate_pdf(patient_name, date_range_str, records):
     return buffer
 
 # ==========================================
-# 3. UI
+# 3. UI MAIN
 # ==========================================
 
 def main():
@@ -208,7 +202,9 @@ def main():
     st.sidebar.title("Navigation")
     page = st.sidebar.radio("Go to:", ["New Treatment", "Patient Records", "Settings"])
 
-    # --- NEW TREATMENT PAGE ---
+    # ---------------------------------------------------------
+    # PAGE: NEW TREATMENT
+    # ---------------------------------------------------------
     if page == "New Treatment":
         st.header("📝 New Treatment Entry")
         col1, col2 = st.columns(2)
@@ -266,10 +262,9 @@ def main():
                 payment_date = st.date_input("Payment Date", datetime.now())
                 payment_amount = st.number_input("Amount Paid ($)", min_value=0.0, value=total, step=0.01)
                 
-                # Immediate Math Check
                 bal = total - payment_amount
                 if bal > 0.01:
-                    st.markdown(f"#### :red[Balance Remaining on this visit: ${bal:.2f}]")
+                    st.markdown(f"#### :red[Balance Remaining: ${bal:.2f}]")
                 elif bal < -0.01:
                     st.markdown(f"#### :orange[Overpayment (Credit): ${abs(bal):.2f}]")
                 else:
@@ -290,7 +285,9 @@ def main():
                 else:
                     st.error("Select a patient first.")
 
-    # --- PATIENT RECORDS PAGE ---
+    # ---------------------------------------------------------
+    # PAGE: PATIENT RECORDS
+    # ---------------------------------------------------------
     elif page == "Patient Records":
         st.header("📂 Patient Financials")
 
@@ -311,8 +308,6 @@ def main():
 
         # 2. CALCULATE STANDING (ALL TIME)
         all_time_df = pd.read_sql("SELECT * FROM treatments WHERE patient_id = ?", conn, params=(pat_id,))
-        
-        # Fill NA to prevent math errors
         all_time_df['total'] = all_time_df['total'].fillna(0.0)
         all_time_df['payment_amount'] = all_time_df['payment_amount'].fillna(0.0)
         
@@ -324,27 +319,25 @@ def main():
             st.divider()
             st.subheader(f"Financial Status: {pat_name}")
             
-            # Show the Equation
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Billed", f"${total_billed:.2f}")
             c2.metric("Total Paid", f"${total_paid:.2f}")
             
-            # Logic: Positive = Owning, Negative = Credit
             if net_position > 0.01:
-                c3.metric("Current Balance (OWING)", f"${net_position:.2f}", delta="-OWING", delta_color="inverse")
+                c3.metric("Current Balance", f"${net_position:.2f}", delta="-OWING", delta_color="inverse")
             elif net_position < -0.01:
                 c3.metric("Current Credit", f"${abs(net_position):.2f}", delta="CREDIT", delta_color="normal")
             else:
                 c3.metric("Status", "Paid in Full", delta="OK")
 
-        # 3. GENERATE STATEMENT (DATE RANGE)
+        # 3. GENERATE STATEMENT
         st.divider()
         st.subheader("🖨️ Generate Receipt / Statement")
         
         col_check, col_d1, col_d2 = st.columns([1, 2, 2])
         
         with col_check:
-            st.write("") # Spacer
+            st.write("") 
             use_all_time = st.checkbox("Select All Time?", value=False)
             
         with col_d1:
@@ -353,7 +346,6 @@ def main():
         with col_d2:
             end_date = st.date_input("End Date", today, disabled=use_all_time)
 
-        # Filter Data
         if use_all_time:
              query = 'SELECT * FROM treatments WHERE patient_id = ? ORDER BY treatment_date DESC'
              params = (pat_id,)
@@ -364,53 +356,111 @@ def main():
         range_df = pd.read_sql(query, conn, params=params)
         range_df['total'] = range_df['total'].fillna(0.0)
         range_df['payment_amount'] = range_df['payment_amount'].fillna(0.0)
-        
         conn.close()
 
         if not range_df.empty:
-            # Show Table
             range_df['Status'] = range_df.apply(
                 lambda x: "Owing" if (x['total'] - x['payment_amount']) > 0.01 else ("Credit" if (x['total'] - x['payment_amount']) < -0.01 else "Paid"), 
                 axis=1
             )
-            
-            st.dataframe(
-                range_df[['treatment_date', 'treatment_type', 'total', 'payment_amount', 'Status']], 
-                use_container_width=True
-            )
+            st.dataframe(range_df[['treatment_date', 'treatment_type', 'total', 'payment_amount', 'Status']], use_container_width=True)
             
             if st.button("Generate Statement PDF"):
                 records = range_df.to_dict('records')
                 date_str = "ALL TIME" if use_all_time else f"{start_date} to {end_date}"
-                
                 pdf_data = generate_pdf(pat_name, date_str, records)
-                
-                st.download_button(
-                    label="⬇️ Download PDF",
-                    data=pdf_data,
-                    file_name=f"Statement_{pat_name}.pdf",
-                    mime="application/pdf"
-                )
+                st.download_button(label="⬇️ Download PDF", data=pdf_data, file_name=f"Statement_{pat_name}.pdf", mime="application/pdf")
         else:
             st.info("No treatments found in the selected range.")
 
-    # --- SETTINGS PAGE ---
+    # ---------------------------------------------------------
+    # PAGE: SETTINGS & DATA MANAGEMENT
+    # ---------------------------------------------------------
     elif page == "Settings":
         st.header("⚙️ Settings")
-        with st.form("settings"):
-            c_name = st.text_input("Clinic Name", value=get_setting("clinic_name"))
-            c_addr = st.text_input("Clinic Address", value=get_setting("clinic_address"))
-            c_phone = st.text_input("Phone", value=get_setting("clinic_phone"))
-            c_hst = st.text_input("HST #", value=get_setting("hst_number"))
-            c_foot = st.text_input("Footer", value=get_setting("receipt_footer"))
+        
+        # 1. Receipt Config
+        with st.expander("🧾 Receipt Customization", expanded=True):
+            with st.form("settings"):
+                c_name = st.text_input("Clinic Name", value=get_setting("clinic_name"))
+                c_addr = st.text_input("Clinic Address", value=get_setting("clinic_address"))
+                c_phone = st.text_input("Phone", value=get_setting("clinic_phone"))
+                c_hst = st.text_input("HST #", value=get_setting("hst_number"))
+                c_foot = st.text_input("Footer", value=get_setting("receipt_footer"))
+                if st.form_submit_button("Save Details"):
+                    update_setting("clinic_name", c_name)
+                    update_setting("clinic_address", c_addr)
+                    update_setting("clinic_phone", c_phone)
+                    update_setting("hst_number", c_hst)
+                    update_setting("receipt_footer", c_foot)
+                    st.success("Updated!")
+
+        # 2. Data Backup & Restore
+        st.divider()
+        st.subheader("💾 Data Management (Backup & Restore)")
+        
+        tab_backup, tab_restore = st.tabs(["⬇️ Backup (Download)", "⬆️ Restore (Upload)"])
+        
+        # --- BACKUP ---
+        with tab_backup:
+            st.write("Download your data periodically to keep it safe.")
+            conn = get_db_connection()
+            df_pat_bk = pd.read_sql("SELECT * FROM patients", conn)
+            df_treat_bk = pd.read_sql("SELECT * FROM treatments", conn)
+            conn.close()
             
-            if st.form_submit_button("Save"):
-                update_setting("clinic_name", c_name)
-                update_setting("clinic_address", c_addr)
-                update_setting("clinic_phone", c_phone)
-                update_setting("hst_number", c_hst)
-                update_setting("receipt_footer", c_foot)
-                st.success("Updated!")
+            b1, b2 = st.columns(2)
+            with b1:
+                st.download_button(
+                    "Download Patients (CSV)", 
+                    data=df_pat_bk.to_csv(index=False).encode('utf-8'),
+                    file_name="backup_patients.csv",
+                    mime="text/csv"
+                )
+            with b2:
+                st.download_button(
+                    "Download Treatments (CSV)", 
+                    data=df_treat_bk.to_csv(index=False).encode('utf-8'),
+                    file_name="backup_treatments.csv",
+                    mime="text/csv"
+                )
+        
+        # --- RESTORE ---
+        with tab_restore:
+            st.warning("⚠️ Uploading files will MERGE data into the database. If starting fresh, this restores your history.")
+            
+            up_pat = st.file_uploader("Upload Patients CSV", type=['csv'])
+            up_treat = st.file_uploader("Upload Treatments CSV", type=['csv'])
+            
+            if st.button("Start Restore Process"):
+                if up_pat and up_treat:
+                    try:
+                        conn = get_db_connection()
+                        
+                        # Load CSVs
+                        new_pats = pd.read_csv(up_pat)
+                        new_treats = pd.read_csv(up_treat)
+                        
+                        # 1. Restore Patients (Keep IDs to maintain links)
+                        # We use 'append' but we must ensure we don't duplicate if ID exists
+                        # Simple strategy: append. If ID conflict, SQLite throws error.
+                        # Ideally, for restoration, we assume we want to put these rows in.
+                        new_pats.to_sql('patients', conn, if_exists='append', index=False)
+                        st.success(f"✅ Restored {len(new_pats)} patients.")
+                        
+                        # 2. Restore Treatments
+                        new_treats.to_sql('treatments', conn, if_exists='append', index=False)
+                        st.success(f"✅ Restored {len(new_treats)} treatment records.")
+                        
+                        conn.close()
+                        st.balloons()
+                        
+                    except sqlite3.IntegrityError:
+                        st.error("Error: Duplicate Data Detected. Some records already exist in the database.")
+                    except Exception as e:
+                        st.error(f"An error occurred: {e}")
+                else:
+                    st.error("Please upload BOTH files (Patients and Treatments) to restore.")
 
 if __name__ == "__main__":
     main()
