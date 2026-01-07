@@ -11,7 +11,7 @@ from reportlab.lib import colors
 # 1. DATABASE MANAGEMENT
 # ==========================================
 
-# Changed to v3 to force a fresh database creation
+# DB Version 3 (Keeps your current data structure)
 DB_FILE = "clinic_v3.db"
 
 def init_db():
@@ -241,23 +241,44 @@ def main():
             hst = cost * 0.13
             total = cost + hst
 
-            st.markdown(f"**Total Due:** :green[**${total:.2f}**]")
+            st.markdown(f"**Total Cost:** :green[**${total:.2f}**]")
             
             st.divider()
             
-            # --- UPDATED: Checkbox Logic ---
+            # --- UPDATED: Payment Section ---
             st.write(" **Payment Status**")
             
-            is_paid_today = st.checkbox("Payment Received Today?", value=True)
+            # 1. Renamed Checkbox
+            is_paid = st.checkbox("Payment Received?", value=True)
             
             payment_amount_input = 0.0
             payment_date_input = None
 
-            if is_paid_today:
+            if is_paid:
                 payment_date_input = st.date_input("Payment Date", datetime.now())
-                payment_amount_input = st.number_input("Amount Paid ($)", min_value=0.0, max_value=1000.0, step=0.01, value=total)
+                
+                # Input for amount
+                payment_amount_input = st.number_input(
+                    "Amount Paid ($)", 
+                    min_value=0.0, 
+                    max_value=1000.0, 
+                    step=0.01, 
+                    value=total
+                )
+                
+                # 2. Real-time Balance Display
+                balance_remaining = total - payment_amount_input
+                
+                if balance_remaining > 0.01:
+                    st.markdown(f"#### :red[Balance Due: ${balance_remaining:.2f}]")
+                elif balance_remaining < -0.01:
+                    st.markdown(f"#### :orange[Overpayment: ${abs(balance_remaining):.2f}]")
+                else:
+                    st.markdown(f"#### :green[Paid in Full]")
+                
             else:
-                st.info("Payment will be recorded as $0.00 (Balance Due).")
+                st.info("Payment will be recorded as $0.00.")
+                st.markdown(f"#### :red[Balance Due: ${total:.2f}]")
 
             if st.button("💾 Save Record", type="primary"):
                 if selected_patient_id:
