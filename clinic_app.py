@@ -16,15 +16,11 @@ DB_FILE = "clinic_v3.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    
-    # Patients Table
     c.execute('''CREATE TABLE IF NOT EXISTS patients (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     full_name TEXT NOT NULL,
                     unique_id TEXT UNIQUE
                 )''')
-    
-    # Treatments Table
     c.execute('''CREATE TABLE IF NOT EXISTS treatments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     patient_id INTEGER,
@@ -37,13 +33,10 @@ def init_db():
                     payment_date DATE,
                     FOREIGN KEY(patient_id) REFERENCES patients(id)
                 )''')
-
-    # Settings Table
     c.execute('''CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT
                 )''')
-    
     defaults = {
         "clinic_name": "My Health Clinic",
         "clinic_address": "123 Wellness Blvd, City, ON",
@@ -51,10 +44,8 @@ def init_db():
         "hst_number": "123456789 RT0001",
         "receipt_footer": "Thank you for your business!"
     }
-    
     for key, val in defaults.items():
         c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, val))
-
     conn.commit()
     conn.close()
 
@@ -74,6 +65,21 @@ def update_setting(key, value):
     conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
     conn.commit()
     conn.close()
+
+# --- CALLBACKS (This fixes the delete issue) ---
+def delete_patient_callback(patient_id):
+    """Deletes a patient and all their history safely."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        # 1. Delete Treatments first
+        conn.execute("DELETE FROM treatments WHERE patient_id = ?", (patient_id,))
+        # 2. Delete Patient
+        conn.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
+        conn.commit()
+        conn.close()
+        st.toast("✅ Patient deleted successfully!", icon="🗑️")
+    except Exception as e:
+        st.error(f"Error deleting patient: {e}")
 
 # ==========================================
 # 2. PDF GENERATOR
@@ -303,7 +309,7 @@ def main():
         pat_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
         pat_name = patients_df.loc[patients_df['display'] == selected_patient_str, 'full_name'].values[0]
 
-        # 2. CALCULATE STANDING (ALL TIME)
+        # 2. CALCULATE STANDING
         all_time_df = pd.read_sql("SELECT * FROM treatments WHERE patient_id = ?", conn, params=(pat_id,))
         all_time_df['total'] = all_time_df['total'].fillna(0.0)
         all_time_df['payment_amount'] = all_time_df['payment_amount'].fillna(0.0)
@@ -327,7 +333,7 @@ def main():
             else:
                 c3.metric("Status", "Paid in Full", delta="OK")
 
-        # 3. INTERACTIVE DATA EDITOR (EDIT & DELETE ROWS)
+        # 3. INTERACTIVE DATA EDITOR
         st.divider()
         st.subheader("📋 Edit / Delete Records")
         st.info("💡 Edit cells below. To delete a row: Select it and press 'Delete'. Click 'Save Changes' to commit.")
@@ -349,11 +355,9 @@ def main():
                 new_ids = set(edited_df['id'].tolist())
                 deleted_ids = original_ids - new_ids
                 
-                # Delete rows
                 for del_id in deleted_ids:
                     conn.execute("DELETE FROM treatments WHERE id = ?", (del_id,))
                 
-                # Update rows
                 for index, row in edited_df.iterrows():
                     if pd.notna(row['id']):
                         conn.execute('''
@@ -368,11 +372,9 @@ def main():
                             row['payment_date'],
                             row['id']
                         ))
-                
                 conn.commit()
                 st.success("Changes saved successfully!")
                 st.rerun()
-                
             except Exception as e:
                 st.error(f"Error saving changes: {e}")
         
@@ -400,7 +402,6 @@ def main():
             else:
                  query = 'SELECT * FROM treatments WHERE patient_id = ? AND treatment_date BETWEEN ? AND ? ORDER BY treatment_date DESC'
                  params = (pat_id, start_date, end_date)
-                 
             range_df = pd.read_sql(query, conn, params=params)
             conn.close()
 
@@ -416,16 +417,13 @@ def main():
         st.divider()
         with st.expander("🚨 Danger Zone: Delete Patient Profile"):
             st.error(f"Warning: You are about to delete **{pat_name}** and ALL their history. This cannot be undone.")
-            if st.button("❌ Permanently Delete Patient"):
-                conn = get_db_connection()
-                # 1. Delete all history first
-                conn.execute("DELETE FROM treatments WHERE patient_id = ?", (pat_id,))
-                # 2. Delete the patient profile
-                conn.execute("DELETE FROM patients WHERE id = ?", (pat_id,))
-                conn.commit()
-                conn.close()
-                st.success(f"Patient {pat_name} has been deleted.")
-                st.rerun()
+            # We use the callback here to ensure deletion happens BEFORE screen refresh
+            st.button(
+                "❌ Permanently Delete Patient", 
+                type="primary",
+                on_click=delete_patient_callback,
+                args=(pat_id,)
+            )
 
     # ---------------------------------------------------------
     # PAGE: SETTINGS & DATA MANAGEMENT
@@ -453,35 +451,20 @@ def main():
         
         tab_backup, tab_restore = st.tabs(["⬇️ Backup (Download)", "⬆️ Restore (Upload)"])
         
-        # --- BACKUP ---
         with tab_backup:
             st.write("Download your data periodically to keep it safe.")
-            
             conn = get_db_connection()
             df_pat_bk = pd.read_sql("SELECT * FROM patients", conn)
             df_treat_bk = pd.read_sql("SELECT * FROM treatments", conn)
             conn.close()
-            
             b1, b2 = st.columns(2)
             with b1:
-                st.download_button(
-                    "Download Patients (CSV)", 
-                    data=df_pat_bk.to_csv(index=False).encode('utf-8'),
-                    file_name="backup_patients.csv",
-                    mime="text/csv"
-                )
+                st.download_button("Download Patients (CSV)", data=df_pat_bk.to_csv(index=False).encode('utf-8'), file_name="backup_patients.csv", mime="text/csv")
             with b2:
-                st.download_button(
-                    "Download Treatments (CSV)", 
-                    data=df_treat_bk.to_csv(index=False).encode('utf-8'),
-                    file_name="backup_treatments.csv",
-                    mime="text/csv"
-                )
+                st.download_button("Download Treatments (CSV)", data=df_treat_bk.to_csv(index=False).encode('utf-8'), file_name="backup_treatments.csv", mime="text/csv")
         
-        # --- RESTORE ---
         with tab_restore:
             st.warning("⚠️ Uploading files will MERGE data into the database. Use this if your data was wiped.")
-            
             up_pat = st.file_uploader("Upload Patients CSV", type=['csv'])
             up_treat = st.file_uploader("Upload Treatments CSV", type=['csv'])
             
@@ -491,16 +474,12 @@ def main():
                         conn = get_db_connection()
                         new_pats = pd.read_csv(up_pat)
                         new_treats = pd.read_csv(up_treat)
-                        
                         new_pats.to_sql('patients', conn, if_exists='append', index=False)
                         st.success(f"✅ Restored {len(new_pats)} patients.")
-                        
                         new_treats.to_sql('treatments', conn, if_exists='append', index=False)
                         st.success(f"✅ Restored {len(new_treats)} treatment records.")
-                        
                         conn.close()
                         st.balloons()
-                        
                     except sqlite3.IntegrityError:
                         st.error("Error: Some of this data already exists in the system.")
                     except Exception as e:
