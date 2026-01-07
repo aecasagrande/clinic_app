@@ -6,7 +6,6 @@ from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
-import time
 
 # ==========================================
 # 1. DATABASE MANAGEMENT
@@ -67,9 +66,9 @@ def update_setting(key, value):
     conn.commit()
     conn.close()
 
-# --- CALLBACKS (FIXED: Clears Selection State) ---
+# --- CALLBACKS (The Fix: Clear ALL Dropdowns) ---
 def delete_patient_callback(patient_id):
-    """Deletes a patient and forces the dropdown to reset."""
+    """Deletes a patient and forces ALL dropdowns to reset."""
     try:
         conn = sqlite3.connect(DB_FILE)
         conn.execute("DELETE FROM treatments WHERE patient_id = ?", (patient_id,))
@@ -77,11 +76,13 @@ def delete_patient_callback(patient_id):
         conn.commit()
         conn.close()
         
-        # --- THE FIX: Clear the "remembered" selection from Session State ---
-        if "patient_select_box" in st.session_state:
-            del st.session_state["patient_select_box"]
+        # Force clear the session state for BOTH dropdowns
+        if "history_patient" in st.session_state:
+            del st.session_state["history_patient"]
+        if "new_treat_patient" in st.session_state:
+            del st.session_state["new_treat_patient"]
             
-        st.toast("✅ Patient deleted!", icon="🗑️")
+        st.toast("✅ Patient deleted and removed from all menus!", icon="🗑️")
         
     except Exception as e:
         st.error(f"Error deleting patient: {e}")
@@ -229,7 +230,8 @@ def main():
             with tab_exist:
                 if not patients_df.empty:
                     patients_df['display'] = patients_df['full_name'] + " (ID: " + patients_df['unique_id'] + ")"
-                    selected_patient_str = st.selectbox("Search Patient", patients_df['display'])
+                    # ADDED KEY HERE
+                    selected_patient_str = st.selectbox("Search Patient", patients_df['display'], key="new_treat_patient")
                     selected_patient_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
                 else:
                     st.info("No patients found.")
@@ -310,8 +312,8 @@ def main():
         # 1. SELECT PATIENT
         patients_df['display'] = patients_df['full_name'] + " (ID: " + patients_df['unique_id'] + ")"
         
-        # KEY ADDED HERE: "pat_select_box"
-        selected_patient_str = st.selectbox("Select Patient:", patients_df['display'], key="pat_select_box")
+        # ADDED KEY HERE
+        selected_patient_str = st.selectbox("Select Patient:", patients_df['display'], key="history_patient")
         
         pat_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
         pat_name = patients_df.loc[patients_df['display'] == selected_patient_str, 'full_name'].values[0]
