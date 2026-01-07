@@ -11,7 +11,7 @@ from reportlab.lib import colors
 # 1. DATABASE MANAGEMENT
 # ==========================================
 
-DB_FILE = "clinic.db"
+DB_FILE = "clinic_v2.db"
 
 def init_db():
     """Initialize the SQLite database with necessary tables."""
