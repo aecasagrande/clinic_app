@@ -66,9 +66,9 @@ def update_setting(key, value):
     conn.commit()
     conn.close()
 
-# --- CALLBACKS (The Fix: Clear ALL Dropdowns) ---
+# --- THE FIX: NUCLEAR RESET ---
 def delete_patient_callback(patient_id):
-    """Deletes a patient and forces ALL dropdowns to reset."""
+    """Deletes a patient and forces a full widget rebuild."""
     try:
         conn = sqlite3.connect(DB_FILE)
         conn.execute("DELETE FROM treatments WHERE patient_id = ?", (patient_id,))
@@ -76,13 +76,13 @@ def delete_patient_callback(patient_id):
         conn.commit()
         conn.close()
         
-        # Force clear the session state for BOTH dropdowns
-        if "history_patient" in st.session_state:
-            del st.session_state["history_patient"]
-        if "new_treat_patient" in st.session_state:
-            del st.session_state["new_treat_patient"]
+        # Increment the version number. This changes the 'key' of the dropdowns,
+        # forcing Streamlit to destroy the old one and build a fresh one.
+        if 'data_version' not in st.session_state:
+            st.session_state['data_version'] = 0
+        st.session_state['data_version'] += 1
             
-        st.toast("✅ Patient deleted and removed from all menus!", icon="🗑️")
+        st.toast("✅ Patient deleted forever.", icon="🗑️")
         
     except Exception as e:
         st.error(f"Error deleting patient: {e}")
@@ -208,6 +208,10 @@ def main():
     st.set_page_config(page_title="Clinic Manager", page_icon="🏥", layout="wide")
     init_db()
 
+    # --- VERSION CONTROL FOR REFRESHING ---
+    if 'data_version' not in st.session_state:
+        st.session_state['data_version'] = 0
+
     st.sidebar.title("Navigation")
     page = st.sidebar.radio("Go to:", ["New Treatment", "Patient Records", "Settings"])
 
@@ -230,8 +234,11 @@ def main():
             with tab_exist:
                 if not patients_df.empty:
                     patients_df['display'] = patients_df['full_name'] + " (ID: " + patients_df['unique_id'] + ")"
-                    # ADDED KEY HERE
-                    selected_patient_str = st.selectbox("Search Patient", patients_df['display'], key="new_treat_patient")
+                    
+                    # DYNAMIC KEY: Changes every time a delete happens
+                    key_dynamic = f"new_treat_patient_{st.session_state['data_version']}"
+                    
+                    selected_patient_str = st.selectbox("Search Patient", patients_df['display'], key=key_dynamic)
                     selected_patient_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
                 else:
                     st.info("No patients found.")
@@ -246,6 +253,9 @@ def main():
                         conn.commit()
                         conn.close()
                         st.success(f"Registered {new_name}!")
+                        
+                        # Force refresh menus
+                        st.session_state['data_version'] += 1
                         st.rerun()
                     except sqlite3.IntegrityError:
                         st.error("Patient ID already exists.")
@@ -296,7 +306,7 @@ def main():
                     st.error("Select a patient first.")
 
     # ---------------------------------------------------------
-    # PAGE: PATIENT RECORDS (WITH EDITING & DELETING)
+    # PAGE: PATIENT RECORDS
     # ---------------------------------------------------------
     elif page == "Patient Records":
         st.header("📂 Patient Financials")
@@ -312,8 +322,9 @@ def main():
         # 1. SELECT PATIENT
         patients_df['display'] = patients_df['full_name'] + " (ID: " + patients_df['unique_id'] + ")"
         
-        # ADDED KEY HERE
-        selected_patient_str = st.selectbox("Select Patient:", patients_df['display'], key="history_patient")
+        # DYNAMIC KEY: Forces full reset on delete
+        key_dynamic_hist = f"history_patient_{st.session_state['data_version']}"
+        selected_patient_str = st.selectbox("Select Patient:", patients_df['display'], key=key_dynamic_hist)
         
         pat_id = patients_df.loc[patients_df['display'] == selected_patient_str, 'id'].values[0]
         pat_name = patients_df.loc[patients_df['display'] == selected_patient_str, 'full_name'].values[0]
