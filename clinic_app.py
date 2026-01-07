@@ -11,7 +11,8 @@ from reportlab.lib import colors
 # 1. DATABASE MANAGEMENT
 # ==========================================
 
-DB_FILE = "clinic_v2.db"
+# Changed to v3 to force a fresh database creation
+DB_FILE = "clinic_v3.db"
 
 def init_db():
     """Initialize the SQLite database with necessary tables."""
@@ -25,7 +26,7 @@ def init_db():
                     unique_id TEXT UNIQUE
                 )''')
     
-    # Treatments Table (Updated with payment_amount)
+    # Treatments Table
     c.execute('''CREATE TABLE IF NOT EXISTS treatments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     patient_id INTEGER,
@@ -116,7 +117,7 @@ def generate_pdf(patient_name, service_date, service_desc, subtotal, tax, total,
     p.drawString(50, height - 200, f"Date of Service: {service_date}")
     
     # --- Payment Status Badge ---
-    is_fully_paid = balance_due <= 0.01 # Small tolerance for float math
+    is_fully_paid = balance_due <= 0.01
     status_text = "PAID IN FULL" if is_fully_paid else "BALANCE DUE"
     status_color = colors.green if is_fully_paid else colors.red
     
@@ -244,10 +245,19 @@ def main():
             
             st.divider()
             
-            # Payment Input
-            st.write(" **Payment Details**")
-            payment_date_input = st.date_input("Payment Date", datetime.now())
-            payment_amount_input = st.number_input("Amount Paid ($)", min_value=0.0, max_value=1000.0, step=0.01, value=total)
+            # --- UPDATED: Checkbox Logic ---
+            st.write(" **Payment Status**")
+            
+            is_paid_today = st.checkbox("Payment Received Today?", value=True)
+            
+            payment_amount_input = 0.0
+            payment_date_input = None
+
+            if is_paid_today:
+                payment_date_input = st.date_input("Payment Date", datetime.now())
+                payment_amount_input = st.number_input("Amount Paid ($)", min_value=0.0, max_value=1000.0, step=0.01, value=total)
+            else:
+                st.info("Payment will be recorded as $0.00 (Balance Due).")
 
             if st.button("💾 Save Record", type="primary"):
                 if selected_patient_id:
@@ -331,8 +341,6 @@ def main():
                 st.write("") # Spacer
                 st.write("") # Spacer
                 if st.button("Generate PDF"):
-                    # Find the specific row data based on selection index
-                    # (This assumes the dropdown order matches the dataframe order, which it does)
                     selected_index = visit_options[visit_options == selected_visit_str].index[0]
                     record = history_df.loc[selected_index]
 
