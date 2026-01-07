@@ -6,6 +6,7 @@ from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
+import time
 
 # ==========================================
 # 1. DATABASE MANAGEMENT
@@ -66,23 +67,34 @@ def update_setting(key, value):
     conn.commit()
     conn.close()
 
-# --- THE FIX: NUCLEAR RESET ---
+# --- THE FIX: NUCLEAR DELETION CALLBACK ---
 def delete_patient_callback(patient_id):
-    """Deletes a patient and forces a full widget rebuild."""
+    """
+    1. Deletes the patient.
+    2. Clears session state.
+    3. Forces an immediate app rerun.
+    """
     try:
         conn = sqlite3.connect(DB_FILE)
+        # 1. Delete Logic
         conn.execute("DELETE FROM treatments WHERE patient_id = ?", (patient_id,))
         conn.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
         conn.commit()
         conn.close()
         
-        # Increment the version number. This changes the 'key' of the dropdowns,
-        # forcing Streamlit to destroy the old one and build a fresh one.
+        # 2. Clear Session State logic for dropdowns
+        for key in list(st.session_state.keys()):
+            if "patient" in key or "select_box" in key:
+                del st.session_state[key]
+        
+        # 3. Force version update to rebuild widgets
         if 'data_version' not in st.session_state:
             st.session_state['data_version'] = 0
         st.session_state['data_version'] += 1
-            
-        st.toast("✅ Patient deleted forever.", icon="🗑️")
+        
+        # 4. Notify and Sleep briefly to ensure DB writes complete
+        st.toast("✅ Patient Deleted. Refreshing...", icon="🔄")
+        time.sleep(0.5)
         
     except Exception as e:
         st.error(f"Error deleting patient: {e}")
@@ -208,7 +220,12 @@ def main():
     st.set_page_config(page_title="Clinic Manager", page_icon="🏥", layout="wide")
     init_db()
 
-    # --- VERSION CONTROL FOR REFRESHING ---
+    # --- REFRESH BUTTON (Manual) ---
+    if st.sidebar.button("🔄 Force Refresh App"):
+        st.session_state['data_version'] += 1
+        st.rerun()
+
+    # --- VERSION CONTROL ---
     if 'data_version' not in st.session_state:
         st.session_state['data_version'] = 0
 
@@ -234,8 +251,7 @@ def main():
             with tab_exist:
                 if not patients_df.empty:
                     patients_df['display'] = patients_df['full_name'] + " (ID: " + patients_df['unique_id'] + ")"
-                    
-                    # DYNAMIC KEY: Changes every time a delete happens
+                    # Key ensures refresh on version change
                     key_dynamic = f"new_treat_patient_{st.session_state['data_version']}"
                     
                     selected_patient_str = st.selectbox("Search Patient", patients_df['display'], key=key_dynamic)
@@ -253,8 +269,6 @@ def main():
                         conn.commit()
                         conn.close()
                         st.success(f"Registered {new_name}!")
-                        
-                        # Force refresh menus
                         st.session_state['data_version'] += 1
                         st.rerun()
                     except sqlite3.IntegrityError:
@@ -306,7 +320,7 @@ def main():
                     st.error("Select a patient first.")
 
     # ---------------------------------------------------------
-    # PAGE: PATIENT RECORDS
+    # PAGE: PATIENT RECORDS (WITH DELETE)
     # ---------------------------------------------------------
     elif page == "Patient Records":
         st.header("📂 Patient Financials")
@@ -322,7 +336,7 @@ def main():
         # 1. SELECT PATIENT
         patients_df['display'] = patients_df['full_name'] + " (ID: " + patients_df['unique_id'] + ")"
         
-        # DYNAMIC KEY: Forces full reset on delete
+        # Key ensures refresh on version change
         key_dynamic_hist = f"history_patient_{st.session_state['data_version']}"
         selected_patient_str = st.selectbox("Select Patient:", patients_df['display'], key=key_dynamic_hist)
         
@@ -437,6 +451,8 @@ def main():
         st.divider()
         with st.expander("🚨 Danger Zone: Delete Patient Profile"):
             st.error(f"Warning: You are about to delete **{pat_name}** and ALL their history. This cannot be undone.")
+            
+            # Use the callback to ensure deletion happens before refresh
             st.button(
                 "❌ Permanently Delete Patient", 
                 type="primary",
